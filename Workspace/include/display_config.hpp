@@ -8,6 +8,9 @@ class LGFX : public lgfx::LGFX_Device {
     lgfx::Panel_GC9A01      _panel_instance;
     lgfx::Bus_SPI       _bus_instance;
     lgfx::Light_PWM     _light_instance;
+    #if defined(TOUCH_CST816S)
+    lgfx::Touch_CST816S _touch_instance;
+    #endif
 
     struct PinConfig {
         int sclk, mosi, dc, cs, rst, bl;
@@ -109,6 +112,51 @@ public:
             _light_instance.config(lcfg);
             _panel_instance.setLight(&_light_instance);
         } // End of backlight configuration block
+
+        #if defined(TOUCH_CST816S)
+        { // Touch controller (CST816S) configuration - optional
+            auto tcfg = _touch_instance.config();
+            // I2C bus selection (0 or 1)
+            #if defined(TOUCH_I2C_PORT)
+                tcfg.i2c_port = TOUCH_I2C_PORT;
+            #else
+                tcfg.i2c_port = 0;
+            #endif
+            // Pins (set these via build flags for your board)
+            #if defined(TOUCH_PIN_SDA)
+                tcfg.pin_sda = TOUCH_PIN_SDA;
+            #else
+                tcfg.pin_sda = -1; // not connected by default
+            #endif
+            #if defined(TOUCH_PIN_SCL)
+                tcfg.pin_scl = TOUCH_PIN_SCL;
+            #else
+                tcfg.pin_scl = -1; // not connected by default
+            #endif
+            #if defined(TOUCH_PIN_INT)
+                tcfg.pin_int = TOUCH_PIN_INT; // interrupt pin (optional)
+            #else
+                tcfg.pin_int = -1;
+            #endif
+            #if defined(TOUCH_PIN_RST)
+                tcfg.pin_rst = TOUCH_PIN_RST; // reset pin (optional)
+            #else
+                tcfg.pin_rst = -1;
+            #endif
+            #if defined(TOUCH_I2C_ADDR)
+                tcfg.i2c_addr = TOUCH_I2C_ADDR;
+            #else
+                tcfg.i2c_addr = 0x15; // common address for CST816S
+            #endif
+            #if defined(TOUCH_I2C_FREQ)
+                tcfg.freq = TOUCH_I2C_FREQ;
+            #else
+                tcfg.freq = 400000;
+            #endif
+            _touch_instance.config(tcfg);
+            _panel_instance.setTouch(&_touch_instance);
+        }
+        #endif
 
         setPanel(&_panel_instance);
     }

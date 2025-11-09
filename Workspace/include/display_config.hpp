@@ -74,10 +74,10 @@ public:
                         cfg.dummy_read_bits  = 0;
 
                         // Color profile selector: choose invert/rgb order via build flags
-                        // - DLCD_COLOR_PROFILE_0: invert=true,  rgb_order=true
-                        // - DLCD_COLOR_PROFILE_1: invert=false, rgb_order=false (swapped R/B)
-                        // - DLCD_COLOR_PROFILE_2: invert=true,  rgb_order=false
-                        // - DLCD_COLOR_PROFILE_3: invert=false, rgb_order=false (default)
+                        // - LCD_COLOR_PROFILE_0: invert=true,  rgb_order=true
+                        // - LCD_COLOR_PROFILE_1: invert=false, rgb_order=false (swapped R/B)
+                        // - LCD_COLOR_PROFILE_2: invert=true,  rgb_order=false
+                        // - LCD_COLOR_PROFILE_3: invert=false, rgb_order=false (default)
                         #if defined(LCD_COLOR_PROFILE_0)
                             cfg.invert = true;  cfg.rgb_order = true;
                         #elif defined(LCD_COLOR_PROFILE_1)

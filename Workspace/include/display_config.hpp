@@ -9,30 +9,36 @@ class LGFX : public lgfx::LGFX_Device {
     lgfx::Bus_SPI       _bus_instance;
     lgfx::Light_PWM     _light_instance;
 
+    struct PinConfig {
+        int sclk, mosi, dc, cs, rst, bl;
+    };
+
+    static PinConfig getPinConfig() {
+        #if defined(LCD_MAP_A)
+            return {10, 11, 8, 9, 14, 2};
+        #elif defined(LCD_MAP_B)
+            return {12, 11, 10, 13, 14, 2};
+        #elif defined(LCD_MAP_C)
+            return {5, 4, 6, 7, 8, 2};
+        #elif defined(LCD_MAP_D)
+            return {10, 11, 9, 8, 14, 2};
+        #else
+            // Default to MAP_A
+            return {10, 11, 8, 9, 14, 2};
+        #endif
+    }
+
 public:
-        LGFX(void) {
-                // Establish pin mapping once so both bus and panel blocks can see PIN_* constants.
-                #if defined(LCD_MAP_A)
-                    const int PIN_SCLK = 10, PIN_MOSI = 11, PIN_DC = 8, PIN_CS = 9, PIN_RST = 14, PIN_BL = 2;
-                #elif defined(LCD_MAP_B)
-                    const int PIN_SCLK = 12, PIN_MOSI = 11, PIN_DC = 10, PIN_CS = 13, PIN_RST = 14, PIN_BL = 2;
-                #elif defined(LCD_MAP_C)
-                    const int PIN_SCLK = 5,  PIN_MOSI = 4,  PIN_DC = 6, PIN_CS = 7, PIN_RST = 8,  PIN_BL = 2;
-                #elif defined(LCD_MAP_D)
-                    const int PIN_SCLK = 10, PIN_MOSI = 11, PIN_DC = 9, PIN_CS = 8, PIN_RST = 14, PIN_BL = 2;
-                #else
-                    // Default to MAP_A
-                    const int PIN_SCLK = 10, PIN_MOSI = 11, PIN_DC = 8, PIN_CS = 9, PIN_RST = 14, PIN_BL = 2;
-                #endif
+        LGFX() {
+            PinConfig pins = getPinConfig();
 
-                { // Bus configuration
-                        auto cfg = _bus_instance.config();
+            { // Bus configuration
+                auto cfg = _bus_instance.config();
 
-            // Set bus pins
-            cfg.pin_sclk = PIN_SCLK;
-            cfg.pin_mosi = PIN_MOSI;
+            cfg.pin_sclk = pins.sclk;
+            cfg.pin_mosi = pins.mosi;
             cfg.pin_miso = -1;
-            cfg.pin_dc   = PIN_DC;
+            cfg.pin_dc   = pins.dc;
 
                         // Allow selecting SPI host via macro (default SPI2_HOST)
                         #if defined(LCD_USE_SPI3)
@@ -60,8 +66,8 @@ public:
         { // Display panel configuration
             auto cfg = _panel_instance.config();
             
-            cfg.pin_cs   = PIN_CS;    // Chip select
-            cfg.pin_rst  = PIN_RST;   // Reset
+            cfg.pin_cs   = pins.cs;    // Chip select
+            cfg.pin_rst  = pins.rst;   // Reset
             cfg.pin_busy = -1;   // Not used
             
             // Panel parameters
@@ -77,7 +83,7 @@ public:
                         // - LCD_COLOR_PROFILE_0: invert=true,  rgb_order=true
                         // - LCD_COLOR_PROFILE_1: invert=false, rgb_order=false (swapped R/B)
                         // - LCD_COLOR_PROFILE_2: invert=true,  rgb_order=false
-                        // - LCD_COLOR_PROFILE_3: invert=false, rgb_order=false (default)
+                        // - (default/fallback): invert=false, rgb_order=false
                         #if defined(LCD_COLOR_PROFILE_0)
                             cfg.invert = true;  cfg.rgb_order = true;
                         #elif defined(LCD_COLOR_PROFILE_1)
@@ -92,17 +98,17 @@ public:
             cfg.bus_shared = true;
 
             _panel_instance.config(cfg);
+        } // End of display panel configuration block
 
         { // Backlight configuration
             auto lcfg = _light_instance.config();
-            lcfg.pin_bl = PIN_BL;
+            lcfg.pin_bl = pins.bl;
             lcfg.invert = false;
             lcfg.freq = 5000;
             lcfg.pwm_channel = 7;
             _light_instance.config(lcfg);
             _panel_instance.setLight(&_light_instance);
-        }
-        }
+        } // End of backlight configuration block
 
         setPanel(&_panel_instance);
     }

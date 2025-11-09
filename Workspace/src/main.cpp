@@ -48,25 +48,25 @@ void setup() {
   delay(500);
 
   // Palette verification: show raw RGB565 primaries and mixes in a grid
-  const uint16_t swatches[] = {0xF800,0x07E0,0x001F,0xFFE0,0xF81F,0x07FF,0xFFFF,0x0000};
+  const uint16_t swatches[] = {TFT_RED, TFT_GREEN, TFT_BLUE, TFT_YELLOW, TFT_MAGENTA, TFT_CYAN, TFT_WHITE, TFT_BLACK};
   const char*   labels[]   = {"RED","GREEN","BLUE","YEL","MAG","CYN","WHT","BLK"};
-  int cols = 4; int cellW = display.width()/cols; int cellH = 40; int row=0; int col=0;
-  for (size_t i=0;i<sizeof(swatches)/sizeof(swatches[0]);++i){
-    col = i % cols; row = i / cols;
-    int x = col*cellW; int y = 40 + row*cellH;
-    display.fillRect(x,y,cellW,cellH, swatches[i]);
-    display.setTextColor((swatches[i]==0x0000?TFT_WHITE:TFT_BLACK), swatches[i]);
-    display.drawString(labels[i], x+cellW/2, y+cellH/2);
+  int cols = 4;
+  int cellW = display.width() / cols;
+  int cellH = 40;
+  for (size_t i = 0; i < sizeof(swatches) / sizeof(swatches[0]); ++i) {
+    int col = i % cols;
+    int row = i / cols;
+    int x = col * cellW; int y = 40 + row * cellH;
+    display.fillRect(x, y, cellW, cellH, swatches[i]);
+    display.setTextColor((swatches[i] == 0x0000 ? TFT_WHITE : TFT_BLACK), swatches[i]);
+    display.drawString(labels[i], x + cellW / 2, y + cellH / 2);
   }
-  Serial.println("Palette grid drawn");
-}
+} // <-- Add this closing brace to end setup()
 
 void loop() {
   static uint32_t t = 0;
   static int phase = 0;
   static bool inverted = false;
-
-  // Cycle vivid background colors every second
   uint16_t colors[] = {TFT_RED, TFT_GREEN, TFT_BLUE, TFT_YELLOW, TFT_CYAN, TFT_MAGENTA, TFT_WHITE, TFT_BLACK};
   const char* names[] = {"RED","GREEN","BLUE","YELLOW","CYAN","MAGENTA","WHITE","BLACK"};
 

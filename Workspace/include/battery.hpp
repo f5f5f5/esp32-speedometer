@@ -88,16 +88,16 @@ private:
       uint32_t mv = analogReadMilliVolts(BATTERY_ADC_PIN);
       int rawADC = analogRead(BATTERY_ADC_PIN);
       lastRawADC = rawADC;
-  float adcVoltage = mv / 1000.0f;
-  float vBat = adcVoltage * VOLTAGE_DIVIDER * ADC_SCALE;
+      float adcVoltage = mv / 1000.0f;
+      float vBat = adcVoltage * VOLTAGE_DIVIDER * ADC_SCALE;
       mvLastSample = mv;
       
       #ifdef DEBUG_BATTERY
       static uint32_t lastRawPrint = 0;
       if (millis() - lastRawPrint > 5000) {
         lastRawPrint = millis();
-  Serial.printf("[BAT-RAW] Pin=%d, ADC=%d, mV=%u, Vadc=%.3f, Vbat=%.3f (div=%.1fx, cal=%.3f)\n", 
-          BATTERY_ADC_PIN, rawADC, mv, adcVoltage, vBat, VOLTAGE_DIVIDER, ADC_SCALE);
+        Serial.printf("[BAT-RAW] Pin=%d, ADC=%d, mV=%u, Vadc=%.3f, Vbat=%.3f (div=%.1fx, cal=%.3f)\n", 
+                      BATTERY_ADC_PIN, rawADC, mv, adcVoltage, vBat, VOLTAGE_DIVIDER, ADC_SCALE);
       }
       #endif
       
@@ -109,8 +109,8 @@ private:
       return vBat;
     #else
       int rawValue = analogRead(BATTERY_ADC_PIN);
-  float adcVoltage = (rawValue / ADC_RESOLUTION) * ADC_VREF;
-  float vBat = adcVoltage * VOLTAGE_DIVIDER * ADC_SCALE;
+      float adcVoltage = (rawValue / ADC_RESOLUTION) * ADC_VREF;
+      float vBat = adcVoltage * VOLTAGE_DIVIDER * ADC_SCALE;
       
       // Reject only clearly invalid readings
       if (rawValue == 0) {
@@ -215,7 +215,9 @@ public:
   
   void update() {
     unsigned long now = millis();
-    if (now - lastUpdate < 100) return; // Update every 100ms for faster USB detection
+    // Update every 100ms: fast cadence primarily improves USB detect responsiveness; 
+    // percentage itself is smoothed to ~1Hz via averaging/EMA
+    if (now - lastUpdate < 100) return;
     
     lastUpdate = now;
     float oldVoltage = voltageFiltered;
@@ -261,9 +263,13 @@ public:
     }
     float spread = (recentCount > 0) ? (vMax - vMin) : 0.0f;
 
-    // Choose absence if stability criteria met for full window duration
-    bool stabilityReady = (recentCount >= (RECENT_SAMPLES * 2) / 3); // need at least 20 samples (~20s)
-    bool highVoltageStable = (voltageFiltered >= USB_VOLT_THRESHOLD && percentage >= 90 && spread < 0.002f && stabilityReady);
+  // Choose absence if stability criteria met for full window duration
+  // Magic numbers factored into named constants for clarity and tuning
+  static constexpr int   USB_DETECT_MIN_PERCENT = 90;      // >= 90% implies near-full
+  static constexpr float USB_STABILITY_SPREAD_V = 0.002f;  // < 2mV spread across window
+  static constexpr int   STABILITY_MIN_SAMPLES  = (RECENT_SAMPLES * 2) / 3; // ~20s at 1Hz
+  bool stabilityReady = (recentCount >= STABILITY_MIN_SAMPLES);
+  bool highVoltageStable = (voltageFiltered >= USB_VOLT_THRESHOLD && percentage >= USB_DETECT_MIN_PERCENT && spread < USB_STABILITY_SPREAD_V && stabilityReady);
 
     // Decide batteryAbsent: prefer stability heuristic when it triggers, else legacy low-voltage heuristic
     if (highVoltageStable) {

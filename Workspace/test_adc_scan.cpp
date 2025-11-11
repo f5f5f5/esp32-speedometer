@@ -4,7 +4,11 @@
 
 void scanADCPins() {
   Serial.println("\n=== Scanning ADC Pins for Battery ===");
-  Serial.println("Looking for ~2050mV (4.1V battery ÷ 2.0 divider)");
+  #ifndef VOLTAGE_DIVIDER
+  #define VOLTAGE_DIVIDER 2.0f
+  #endif
+  int expected_mv = (int)roundf(4100.0f / VOLTAGE_DIVIDER);
+  Serial.printf("Looking for ~%dmV (4.1V battery ÷ %.1f divider)\n", expected_mv, (double)VOLTAGE_DIVIDER);
   Serial.println("Pin | ADC Raw | Millivolts | Voltage");
   Serial.println("----|---------|------------|--------");
   
@@ -26,13 +30,13 @@ void scanADCPins() {
     }
     uint32_t avg_mv = sum_mv / 10;
     uint32_t avg_raw = sum_raw / 10;
-    float voltage = (avg_mv / 1000.0f) * 2.0f; // Assume 2x divider
+  float voltage = (avg_mv / 1000.0f) * VOLTAGE_DIVIDER; // Use configured divider
     
     Serial.printf(" %2d | %4d    | %4d       | %.3fV", 
                   pin, avg_raw, avg_mv, voltage);
     
-    // Highlight likely battery pins (expecting ~2.05V at ADC for 4.1V battery)
-    if (avg_mv >= 1900 && avg_mv <= 2200) {
+    // Highlight likely battery pins (expecting ~4100mV / divider at ADC for 4.1V battery)
+    if (avg_mv >= (uint32_t)(expected_mv * 0.9f) && avg_mv <= (uint32_t)(expected_mv * 1.1f)) {
       Serial.printf(" <-- LIKELY BATTERY! (%.2fV actual)", voltage);
     }
     Serial.println();

@@ -28,9 +28,16 @@ struct SwipeState {
   uint32_t startMs = 0;
 };
 static SwipeState swipe;
-static const int SWIPE_THRESHOLD_PX = 50;     // horizontal distance to trigger swipe
-static const int TAP_THRESHOLD_PX   = 10;     // max movement considered a tap
-static const uint32_t TAP_TIME_MS   = 300;    // tap max duration
+// Gesture thresholds (overridable via build flags)
+#ifndef SWIPE_THRESHOLD_PX
+#define SWIPE_THRESHOLD_PX 50     // horizontal distance to trigger swipe
+#endif
+#ifndef TAP_THRESHOLD_PX
+#define TAP_THRESHOLD_PX   10     // max movement considered a tap
+#endif
+#ifndef TAP_TIME_MS
+#define TAP_TIME_MS        300    // tap max duration
+#endif
 
 // Optional: I2C scanner to locate CST816S touch on unknown pins.
 #if defined(TOUCH_I2C_SCANNER)
@@ -155,7 +162,9 @@ static inline void polarPoint(int cx, int cy, float r, float deg, int &x, int &y
 
 // Fill an arc sector between startDeg..endDeg with thickness rOuter-rInner
 // Handles wrap when endDeg < startDeg by adding 360 to end.
-void fillArc(int cx, int cy, float rInner, float rOuter, float startDeg, float endDeg, uint16_t color, float stepDeg = 3.0f) {
+// Arc rendering resolution: smaller values = smoother arcs, larger = faster rendering
+static constexpr float ARC_STEP_DEGREES = 3.0f;
+void fillArc(int cx, int cy, float rInner, float rOuter, float startDeg, float endDeg, uint16_t color, float stepDeg = ARC_STEP_DEGREES) {
   if (endDeg < startDeg) endDeg += 360.0f;
   int px_i, py_i, px_o, py_o, qx_i, qy_i, qx_o, qy_o;
   float prev = startDeg;
@@ -186,7 +195,7 @@ void drawArcGauge(int cx, int cy, float rInner, float rOuter, float startDeg, fl
 // Fill arc segment to sprite for double buffering
 void fillArcToSprite(LGFX_Sprite* spr, int cx, int cy, float rInner, float rOuter, float startDeg, float endDeg, uint16_t color) {
   if (startDeg > endDeg) return;
-  const float stepDeg = 3.0f;
+  const float stepDeg = ARC_STEP_DEGREES;
   int px_i, py_i, px_o, py_o;
   int qx_i, qy_i, qx_o, qy_o;
   float prev = startDeg;
@@ -210,14 +219,8 @@ void renderMain() {
   const int cx = W/2, cy = H/2;
   ColorScheme& cs = getColors();
   
-  // Create sprite buffer for double buffering
-  static LGFX_Sprite sprite(&display);
-  static bool spriteCreated = false;
-  
-  if (!spriteCreated) {
-    sprite.createSprite(W, H);
-    spriteCreated = true;
-  }
+  // Create sprite buffer for double buffering (use global shared sprite)
+  if (!spriteInit) { sprite.createSprite(W, H); spriteInit = true; }
   
   // Draw everything to the sprite buffer
   sprite.fillSprite(cs.background);
@@ -263,7 +266,7 @@ void renderMain() {
     float yellowEnd = min(fillDeg, speedSpan * 0.85f); // 85% of span = 204°
     
     // Green segment
-    if (greenEnd > 0) {
+    if (greenEnd > 0.0f) {
       float greenEndAngle = speedStart + greenEnd;
       if (greenEndAngle > 360.0f) {
         fillArcToSprite(&sprite, cx, cy, rInner, rOuter, speedStart, 360, cs.arcLow);
@@ -322,7 +325,7 @@ void renderMain() {
   } else {
     batColor = cs.arcLow;  // Green for normal battery
   }
-  if (currentBatFill > 0) {
+  if (currentBatFill > 0.0f) {
     fillArcToSprite(&sprite, cx, cy, rBatInner, rBatOuter, batStart, batStart + currentBatFill, batColor);
   }
   
@@ -331,7 +334,7 @@ void renderMain() {
   
   // Satellite arc filled portion
   float currentSatFill = (min(ui.satellites, 20) / 20.0f) * satSpan;
-  if (currentSatFill > 0) {
+  if (currentSatFill > 0.0f) {
     fillArcToSprite(&sprite, cx, cy, rSatInner, rSatOuter, satStart - currentSatFill, satStart, cs.arcLow);
   }
   
@@ -484,9 +487,12 @@ void renderMain() {
     sprite.fillRect(batIconX + 12, batIconY - 4, 2, 6, batIconColor);
     
     // Fill level
-    int batFill = (ui.battery_pc * 20) / 100;
-    if (batFill > 0) {
-      sprite.fillRect(batIconX - 10, batIconY - 6, batFill, 10, batIconColor);
+    int batFillPixels = (ui.battery_pc * 20) / 100;
+    static constexpr int BAT_ICON_FILL_OFFSET_X = -10;
+    static constexpr int BAT_ICON_FILL_OFFSET_Y = -6;
+    static constexpr int BAT_ICON_FILL_HEIGHT   = 10;
+    if (batFillPixels > 0) {
+      sprite.fillRect(batIconX + BAT_ICON_FILL_OFFSET_X, batIconY + BAT_ICON_FILL_OFFSET_Y, batFillPixels, BAT_ICON_FILL_HEIGHT, batIconColor);
     }
   }
   
@@ -513,21 +519,21 @@ void renderMain() {
       int warnX = batIconX + 18;             // right of battery tip
       int warnY = batIconY - 16;             // slightly above battery top
 
-  sprite.setTextDatum(TL_DATUM);         // top-left anchored
-  sprite.setFont(&fonts::FreeSansBold12pt7b);  // smaller bold font
-  sprite.setTextColor(cs.arcHigh, cs.background);
-  // Convert mm offsets to pixels (~240px / 32.512mm ≈ 7.38 px/mm for 1.28" round display)
-  // Requested adjustments relative to previous anchor (warnX,warnY):
-  //   LOW: up 9mm ( -9*7.38 ≈ -66px ), left 10mm ( -10*7.38 ≈ -74px )
-  //   BAT: up 8mm ( -8*7.38 ≈ -59px ), left 7mm ( -7*7.38 ≈ -52px )
-  int lowX = (warnX - 74) + 17;   // +2px more to the right
-  // Previously LOW baseline after mm adjust: (warnY - 66) + 37; raise by total 5px now
-  int lowY = (warnY - 66) + 37 - 5; 
-  int batX = warnX - 52;         // keep BAT horizontal as before
-  // Maintain 1px gap below adjusted LOW (BAT moved up together with LOW)
-  int batY = lowY + 19; // assumed 18px height + 1px gap
-  sprite.drawString("LOW", lowX, lowY);
-  sprite.drawString("BAT", batX, batY);
+    sprite.setTextDatum(TL_DATUM);         // top-left anchored
+    sprite.setFont(&fonts::FreeSansBold12pt7b);  // smaller bold font
+    sprite.setTextColor(cs.arcHigh, cs.background);
+    // Convert mm offsets to pixels (~240px / 32.512mm ≈ 7.38 px/mm for 1.28" round display)
+    // Requested adjustments relative to previous anchor (warnX,warnY):
+    //   LOW: up 9mm ( -9*7.38 ≈ -66px ), left 10mm ( -10*7.38 ≈ -74px )
+    //   BAT: up 8mm ( -8*7.38 ≈ -59px ), left 7mm ( -7*7.38 ≈ -52px )
+    int lowX = (warnX - 74) + 17;   // +2px more to the right
+    // Previously LOW baseline after mm adjust: (warnY - 66) + 37; raise by total 5px now
+    int lowY = (warnY - 66) + 37 - 5; 
+    int batX = warnX - 52;         // keep BAT horizontal as before
+    // Maintain 1px gap below adjusted LOW (BAT moved up together with LOW)
+    int batY = lowY + 19; // assumed 18px height + 1px gap
+    sprite.drawString("LOW", lowX, lowY);
+    sprite.drawString("BAT", batX, batY);
       sprite.setFont(nullptr);               // restore default font
     }
   }

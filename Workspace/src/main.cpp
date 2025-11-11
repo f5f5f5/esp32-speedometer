@@ -2,9 +2,17 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include "display_config.hpp"
+#include "battery.hpp"
 
 // Create display instance
 LGFX display;
+
+// Create battery management instance
+Battery battery;
+
+// Global double-buffer sprite for non-main screens (and shared use)
+static LGFX_Sprite sprite(&display);
+static bool spriteInit = false;
 
 // ---------- UI State ----------
 enum class Screen { MAIN, SETTINGS, METRICS };
@@ -70,18 +78,20 @@ static void scanI2CForTouch() {
 
 struct UIState {
   float speed_kmh = 88.0f;       // demo speed
-  float max_kmh   = 220.0f;      // gauge max
+  float max_kmh   = 220.0f;      // gauge max (dial pegging threshold)
   const char* units = "km/h";    // units label
   int satellites = 9;            // demo satellite count
-  int battery_pc = 73;           // battery percent
+  int battery_pc = 0;            // battery percent (updated from actual reading)
   double lat = 51.5074;          // demo location
   double lon = -0.1278;
   bool isDarkMode = false;       // light mode by default
+  bool lowBatFlashState = false; // flash state for LOW BAT warning (updated in loop)
   
   // Track previous values to avoid unnecessary redraws
   float prev_speed = -1.0f;
   int prev_battery = -1;
   int prev_satellites = -1;
+  BatteryState prev_battery_state = BatteryState::UNKNOWN;
   bool needsFullRedraw = true;
 } ui;
 
@@ -97,32 +107,36 @@ struct ColorScheme {
   uint16_t arcHigh;     // red segment
   uint16_t iconNormal;
   uint16_t iconDim;
+  uint16_t settingSelected;  // color for selected setting option
 };
 
 ColorScheme lightMode = {
-  .background    = TFT_WHITE,
+  .background    = 0xADB5,  // #a0d8e0 darker cyan with more hue (RGB565: R=20, G=27, B=28)
   .text          = TFT_BLACK,
   .speedText     = TFT_BLACK,
   .unitsText     = TFT_BLACK,
-  .arcBackground = TFT_BLACK,
+  .arcBackground = 0x1082,  // dark gray (same as dark mode background)
   .arcLow        = 0x2F43,  // #2f7043 green (RGB565: 5-6-5 bits)
   .arcMid        = 0xFD20,  // orange/yellow
   .arcHigh       = 0xF800,  // red
   .iconNormal    = TFT_BLACK,
-  .iconDim       = 0x8410   // gray
+  .iconDim       = 0x8410,  // gray
+  .settingSelected = 0x1082  // dark gray for selected options in light mode
 };
 
 ColorScheme darkMode = {
-  .background    = TFT_BLACK,
+  .background    = 0x1082,  // #1a2021 dark gray (RGB565: R=3, G=4, B=4)
   .text          = TFT_WHITE,
   .speedText     = TFT_WHITE,
   .unitsText     = 0xCE79,  // light gray
-  .arcBackground = 0x2104,  // dark gray
-  .arcLow        = 0x2F43,  // #2f7043 green (RGB565: 5-6-5 bits)
-  .arcMid        = 0xFD20,  // orange
-  .arcHigh       = 0xF800,  // red
+  .arcBackground = 0xADB5,  // light cyan (same as light mode background)
+  // Dark mode arc colors muted toward dark grey for subtler contrast
+  .arcLow        = 0x0240,  // very dark muted green (closer to gray)
+  .arcMid        = 0x8420,  // muted dark amber
+  .arcHigh       = 0x9000,  // dark red (less bright than pure red)
   .iconNormal    = TFT_WHITE,
-  .iconDim       = 0x8410   // gray
+  .iconDim       = 0x8410,  // gray
+  .settingSelected = 0x8420  // muted amber for selected options in dark mode
 };
 
 ColorScheme& getColors() {
@@ -299,7 +313,15 @@ void renderMain() {
   
   // Battery arc filled portion
   float currentBatFill = (ui.battery_pc / 100.0f) * batSpan;
-  uint16_t batColor = (ui.battery_pc < 20) ? cs.arcHigh : cs.arcLow;
+  // Blue when USB powered, red when low battery, green otherwise
+  uint16_t batColor;
+  if (battery.isUSBPowered()) {
+    batColor = 0x051D;  // Blue (RGB565: 0,160,232)
+  } else if (ui.battery_pc < 20) {
+    batColor = cs.arcHigh;  // Red for low battery
+  } else {
+    batColor = cs.arcLow;  // Green for normal battery
+  }
   if (currentBatFill > 0) {
     fillArcToSprite(&sprite, cx, cy, rBatInner, rBatOuter, batStart, batStart + currentBatFill, batColor);
   }
@@ -315,7 +337,8 @@ void renderMain() {
   
   // Draw anti-aliased borders around all arc bars
   // Note: drawArc uses standard angles (0° = 3 o'clock), so subtract 90° from our UI angles
-  uint16_t borderColor = ui.isDarkMode ? TFT_WHITE : TFT_BLACK;
+  // Use opposite mode's background color for borders (light mode uses dark bg, dark mode uses light bg)
+  uint16_t borderColor = ui.isDarkMode ? 0xADB5 : 0x1082;
   
   // Speed arc outer and inner borders (240° to 360°, then 0° to 120°)
   // UI angles: 240° to 360° = drawArc 150° to 270°
@@ -335,6 +358,46 @@ void renderMain() {
   polarPoint(cx, cy, rInner, 120, x1, y1);
   polarPoint(cx, cy, rOuter, 120, x2, y2);
   sprite.drawLine(x1, y1, x2, y2, borderColor);
+  
+  // Speed needle indicator (short red needle pointing at current speed on arc)
+  // Only visible portion near the arc, with small gap
+  float currentSpeedAngle = speedStart + fillDeg;  // angle on arc corresponding to current speed
+  if (currentSpeedAngle >= 360.0f) currentSpeedAngle -= 360.0f;  // wrap if needed
+  
+  float needleRad = deg2rad(currentSpeedAngle);
+  const float gapFromArc = 2.0f;
+  const float visibleLength = 30.0f;
+  
+  float needleTip = rInner - gapFromArc;
+  float needleStart = needleTip - visibleLength;
+  
+  // Draw tapered pointer (wide at base, narrow at tip)
+  // Calculate perpendicular offset for tapering
+  float perpRad = needleRad + PI / 2.0f;  // perpendicular to needle direction
+  
+  // Base (wide end) - about 6px total width
+  float baseWidth = 3.0f;
+  int bx1 = cx + (int)(cosf(needleRad) * needleStart + cosf(perpRad) * baseWidth);
+  int by1 = cy + (int)(sinf(needleRad) * needleStart + sinf(perpRad) * baseWidth);
+  int bx2 = cx + (int)(cosf(needleRad) * needleStart - cosf(perpRad) * baseWidth);
+  int by2 = cy + (int)(sinf(needleRad) * needleStart - sinf(perpRad) * baseWidth);
+  
+  // Tip (narrow end) - about 3px total width
+  float tipWidth = 1.5f;
+  int tx1 = cx + (int)(cosf(needleRad) * needleTip + cosf(perpRad) * tipWidth);
+  int ty1 = cy + (int)(sinf(needleRad) * needleTip + sinf(perpRad) * tipWidth);
+  int tx2 = cx + (int)(cosf(needleRad) * needleTip - cosf(perpRad) * tipWidth);
+  int ty2 = cy + (int)(sinf(needleRad) * needleTip - sinf(perpRad) * tipWidth);
+  
+  // Draw shadow (offset slightly, slightly darker than background)
+  const int shadowOffset = 2;
+  uint16_t shadowColor = ui.isDarkMode ? 0x0841 : 0x8C92;  // Darker cyan for light mode, dark gray for dark mode
+  sprite.fillTriangle(bx1+shadowOffset, by1+shadowOffset, bx2+shadowOffset, by2+shadowOffset, tx1+shadowOffset, ty1+shadowOffset, shadowColor);
+  sprite.fillTriangle(bx2+shadowOffset, by2+shadowOffset, tx1+shadowOffset, ty1+shadowOffset, tx2+shadowOffset, ty2+shadowOffset, shadowColor);
+  
+  // Draw filled triangle (pointer shape)
+  sprite.fillTriangle(bx1, by1, bx2, by2, tx1, ty1, TFT_RED);
+  sprite.fillTriangle(bx2, by2, tx1, ty1, tx2, ty2, TFT_RED);
   
   // Battery arc outer and inner borders
   // UI angles: 185° to 240° = drawArc 95° to 150°
@@ -366,10 +429,17 @@ void renderMain() {
   sprite.setTextDatum(MC_DATUM);
   sprite.setFont(&fonts::FreeSansBold24pt7b);
   sprite.setTextColor(cs.speedText, cs.background);
-  char buf[8];
-  snprintf(buf, sizeof(buf), "%d", (int)roundf(ui.speed_kmh));
+  char buf[12];
+  // Show true speed value even when exceeding dial max
+  // Display 1 decimal place for speeds below 10 units
+  if (ui.speed_kmh < 10.0f) {
+    snprintf(buf, sizeof(buf), "%.1f", ui.speed_kmh);
+  } else {
+    snprintf(buf, sizeof(buf), "%d", (int)roundf(ui.speed_kmh));
+  }
   sprite.drawString(buf, cx, cy - 18);
   sprite.setFont(nullptr);  // Reset to default font
+  
   
   // Draw units above the speed numbers (larger size with tighter spacing)
   sprite.setTextSize(2);
@@ -377,24 +447,90 @@ void renderMain() {
   sprite.drawString(ui.units, cx, cy - 52);
   sprite.setTextSize(1);  // Reset text size
 
-  // Battery icon and percentage text
+  // Battery or USB icon and percentage text
   int batIconX = cx - 40;
   int batIconY = cy + 55;
+  int usbIconY = cy + 55;  // Align with satellite icon center line
   
-  uint16_t batIconColor = (ui.battery_pc < 20) ? cs.arcHigh : cs.iconNormal;
-  sprite.drawRect(batIconX - 12, batIconY - 8, 24, 14, batIconColor);
-  sprite.fillRect(batIconX + 12, batIconY - 4, 2, 6, batIconColor);
-  int batFill = (ui.battery_pc * 20) / 100;
-  if (batFill > 0) {
-    sprite.fillRect(batIconX - 10, batIconY - 6, batFill, 10, batIconColor);
+  // Determine battery icon color and features based on state
+  bool isCharging = battery.isCharging();
+  bool isUSBPowered = battery.isUSBPowered();
+  bool isLowBattery = battery.isLowBattery();
+  
+  if (isUSBPowered) {
+    // Draw simple horizontal USB-C plug icon (centered at batIconX, batIconY)
+    uint16_t usbColor = cs.iconNormal;
+    
+    // Total icon width is 18px (12px body + 6px connector), so center offset is -9px
+    int usbCenterOffset = -9;
+    
+    // Cable extending left
+    sprite.fillRect(batIconX + usbCenterOffset - 8, batIconY - 1, 8, 2, usbColor);
+    
+    // USB-C plug body (wider left part - 12px wide)
+    sprite.fillRoundRect(batIconX + usbCenterOffset, batIconY - 5, 12, 10, 2, usbColor);
+    
+    // USB-C connector (narrower right part - 6px wide)
+    sprite.fillRoundRect(batIconX + usbCenterOffset + 12, batIconY - 3, 6, 6, 1, usbColor);
+    
+    // Small contact line inside connector
+    sprite.drawLine(batIconX + usbCenterOffset + 14, batIconY - 1, batIconX + usbCenterOffset + 14, batIconY + 1, cs.background);
+    sprite.drawLine(batIconX + usbCenterOffset + 16, batIconY - 1, batIconX + usbCenterOffset + 16, batIconY + 1, cs.background);
+  } else {
+    // Draw battery icon when on battery power
+    uint16_t batIconColor = isLowBattery ? cs.arcHigh : cs.iconNormal;
+    
+    sprite.drawRect(batIconX - 12, batIconY - 8, 24, 14, batIconColor);
+    sprite.fillRect(batIconX + 12, batIconY - 4, 2, 6, batIconColor);
+    
+    // Fill level
+    int batFill = (ui.battery_pc * 20) / 100;
+    if (batFill > 0) {
+      sprite.fillRect(batIconX - 10, batIconY - 6, batFill, 10, batIconColor);
+    }
   }
   
   sprite.setTextDatum(TC_DATUM);
   sprite.setTextSize(1);
   sprite.setTextColor(cs.text, cs.background);
-  char batTxt[6];
-  snprintf(batTxt, sizeof(batTxt), "%d%%", ui.battery_pc);
+  char batTxt[8];
+  // Show percentage on battery, "USB" label when on USB power
+  if (isUSBPowered) {
+    snprintf(batTxt, sizeof(batTxt), "USB");
+  } else {
+    snprintf(batTxt, sizeof(batTxt), "%d%%", ui.battery_pc);
+  }
   sprite.drawString(batTxt, batIconX, batIconY + 10);
+  
+  // Status overlay near battery (LOW/BAT warning when discharging)
+  // Note: Charging icon removed - hardware cannot detect charging state without dedicated CHG pin
+  bool showLowWarning = (isLowBattery && !isUSBPowered); // low only when discharging & below threshold
+
+  if (showLowWarning) {
+    // Use flash state updated in loop (time-based, independent of redraws)
+    if (ui.lowBatFlashState) {
+      // Position label just above and to the right of battery icon
+      int warnX = batIconX + 18;             // right of battery tip
+      int warnY = batIconY - 16;             // slightly above battery top
+
+  sprite.setTextDatum(TL_DATUM);         // top-left anchored
+  sprite.setFont(&fonts::FreeSansBold12pt7b);  // smaller bold font
+  sprite.setTextColor(cs.arcHigh, cs.background);
+  // Convert mm offsets to pixels (~240px / 32.512mm ≈ 7.38 px/mm for 1.28" round display)
+  // Requested adjustments relative to previous anchor (warnX,warnY):
+  //   LOW: up 9mm ( -9*7.38 ≈ -66px ), left 10mm ( -10*7.38 ≈ -74px )
+  //   BAT: up 8mm ( -8*7.38 ≈ -59px ), left 7mm ( -7*7.38 ≈ -52px )
+  int lowX = (warnX - 74) + 17;   // +2px more to the right
+  // Previously LOW baseline after mm adjust: (warnY - 66) + 37; raise by total 5px now
+  int lowY = (warnY - 66) + 37 - 5; 
+  int batX = warnX - 52;         // keep BAT horizontal as before
+  // Maintain 1px gap below adjusted LOW (BAT moved up together with LOW)
+  int batY = lowY + 19; // assumed 18px height + 1px gap
+  sprite.drawString("LOW", lowX, lowY);
+  sprite.drawString("BAT", batX, batY);
+      sprite.setFont(nullptr);               // restore default font
+    }
+  }
 
   // Satellite icon (inspired by ac-illust design, flipped horizontally)
   // Positioned at right, with solar panel on left side
@@ -463,42 +599,52 @@ void renderSettings() {
   const int cy = H/2;
   ColorScheme& cs = getColors();
   
-  display.fillScreen(cs.background);
-  display.setTextDatum(MC_DATUM);
-  display.setTextColor(cs.text, cs.background);
-  display.setTextSize(2);
-  display.drawString("Settings", cx, 30);
-
-  display.setTextSize(1);
-  display.setTextDatum(MC_DATUM);
+  // Use sprite for double-buffered rendering
+  if (!spriteInit) { sprite.createSprite(W, H); spriteInit = true; }
+  sprite.fillSprite(cs.background);
+  sprite.setTextDatum(MC_DATUM);
+  sprite.setTextColor(cs.text, cs.background);
+  
+  // Title with nice font
+  sprite.setFont(&fonts::FreeSansBold12pt7b);
+  sprite.drawString("Settings", cx, 35);
+  sprite.setFont(&fonts::FreeSans9pt7b);
   
   // Display mode section
-  display.setTextColor(cs.text, cs.background);
-  display.drawString("Display Mode:", cx, 60);
-  display.setTextColor(ui.isDarkMode ? cs.text : cs.arcMid, cs.background);
-  display.drawString(ui.isDarkMode ? "> Dark" : "  Light", cx - 35, 78);
-  display.setTextColor(ui.isDarkMode ? cs.arcMid : cs.text, cs.background);
-  display.drawString(ui.isDarkMode ? "  Light" : "> Dark", cx + 35, 78);
+  sprite.setTextColor(cs.text, cs.background);
+  sprite.drawString("Display Mode", cx, 65);
+  sprite.setFont(nullptr);  // Default font for options
+  sprite.setTextSize(1);
+  sprite.setTextColor(ui.isDarkMode ? cs.text : cs.settingSelected, cs.background);
+  sprite.drawString(ui.isDarkMode ? "> Dark" : "  Light", cx - 35, 82);
+  sprite.setTextColor(ui.isDarkMode ? cs.settingSelected : cs.text, cs.background);
+  sprite.drawString(ui.isDarkMode ? "  Light" : "> Dark", cx + 35, 82);
   
   // Units section
-  display.setTextColor(cs.text, cs.background);
-  display.drawString("Units:", cx, 105);
-  display.setTextColor(cs.arcMid, cs.background);
-  display.drawString("> km/h", cx, 123);
-  display.setTextColor(cs.iconDim, cs.background);
-  display.drawString("mph / m/s", cx, 138);
+  sprite.setFont(&fonts::FreeSans9pt7b);
+  sprite.setTextColor(cs.text, cs.background);
+  sprite.drawString("Units", cx, 110);
+  sprite.setFont(nullptr);
+  sprite.setTextColor(cs.settingSelected, cs.background);
+  sprite.drawString("> km/h", cx, 127);
+  sprite.setTextColor(cs.iconDim, cs.background);
+  sprite.drawString("mph / m/s", cx, 142);
 
   // Speed scale section
-  display.setTextColor(cs.text, cs.background);
-  display.drawString("Speed Scale:", cx, 163);
-  display.setTextColor(cs.arcMid, cs.background);
-  display.drawString("> Driving (220)", cx, 181);
-  display.setTextColor(cs.iconDim, cs.background);
-  display.drawString("Walking / Cycling", cx, 196);
+  sprite.setFont(&fonts::FreeSans9pt7b);
+  sprite.setTextColor(cs.text, cs.background);
+  sprite.drawString("Speed Scale", cx, 168);
+  sprite.setFont(nullptr);
+  sprite.setTextColor(cs.settingSelected, cs.background);
+  sprite.drawString("> Driving (220)", cx, 185);
+  sprite.setTextColor(cs.iconDim, cs.background);
+  sprite.drawString("Walking / Cycling", cx, 200);
 
-  display.setTextColor(cs.iconDim, cs.background);
-  display.setTextSize(1);
-  display.drawString("Swipe to navigate", cx, 220);
+  sprite.setTextColor(cs.iconDim, cs.background);
+  sprite.drawString("Swipe to navigate", cx, 220);
+  
+  // Push to display
+  sprite.pushSprite(0, 0);
 }
 
 void renderMetrics() {
@@ -508,36 +654,116 @@ void renderMetrics() {
   const int cy = H/2;
   ColorScheme& cs = getColors();
   
-  display.fillScreen(cs.background);
-  display.setTextDatum(MC_DATUM);
-  display.setTextColor(cs.text, cs.background);
-  display.setTextSize(2);
-  display.drawString("Metrics", cx, 30);
-
-  display.setTextSize(1);
-  display.setTextDatum(MC_DATUM);
+  // Use sprite for double-buffered rendering
+  if (!spriteInit) { sprite.createSprite(W, H); spriteInit = true; }
+  sprite.fillSprite(cs.background);
+  sprite.setTextDatum(MC_DATUM);
+  
+  // Title with nice font
+  sprite.setFont(&fonts::FreeSansBold12pt7b);
+  sprite.setTextColor(cs.text, cs.background);
+  sprite.drawString("Metrics", cx, 35);
+  
+  // Content with clean font
+  sprite.setFont(&fonts::FreeSans9pt7b);
   
   char line[48];
-  display.setTextColor(cs.text, cs.background);
+  sprite.setTextColor(cs.text, cs.background);
   
   snprintf(line, sizeof(line), "Satellites: %d", ui.satellites);
-  display.drawString(line, cx, 70);
+  sprite.drawString(line, cx, 70);
   
-  snprintf(line, sizeof(line), "Battery: %d%%", ui.battery_pc);
-  display.drawString(line, cx, 95);
-  
-  snprintf(line, sizeof(line), "Speed: %.1f %s", ui.speed_kmh, ui.units);
-  display.drawString(line, cx, 120);
-  
-  display.setTextColor(cs.iconDim, cs.background);
+  sprite.setFont(nullptr);  // Smaller font for coordinates
+  sprite.setTextColor(cs.iconDim, cs.background);
   snprintf(line, sizeof(line), "Lat: %.5f", ui.lat);
-  display.drawString(line, cx, 150);
+  sprite.drawString(line, cx, 95);
   
   snprintf(line, sizeof(line), "Lon: %.5f", ui.lon);
-  display.drawString(line, cx, 165);
+  sprite.drawString(line, cx, 110);
+  
+  sprite.setFont(&fonts::FreeSans9pt7b);
+  sprite.setTextColor(cs.text, cs.background);
+  
+  // Show battery info only when not on USB power
+  if (battery.isUSBPowered()) {
+    snprintf(line, sizeof(line), "Power: USB (%.2fV)", battery.getVoltage());
+    sprite.drawString(line, cx, 140);
+  } else {
+    snprintf(line, sizeof(line), "Battery: %d%% (%.2fV)", ui.battery_pc, battery.getVoltage());
+    sprite.drawString(line, cx, 140);
+  }
 
-  display.setTextColor(cs.iconDim, cs.background);
-  display.drawString("Swipe to navigate", cx, 205);
+  sprite.setFont(nullptr);
+  sprite.setTextColor(cs.iconDim, cs.background);
+  sprite.drawString("Swipe to navigate", cx, 205);
+  
+  // Push to display
+  sprite.pushSprite(0, 0);
+}
+
+// ---------- Splash Screen ----------
+void renderSplash() {
+  const int W = display.width();
+  const int H = display.height();
+  const int cx = W/2;
+  const int cy = H/2;
+  
+  display.fillScreen(TFT_BLACK);
+  
+  // Draw large speed icon/logo (stylized gauge arc)
+  const float r1 = 70.0f;
+  const float r2 = 85.0f;
+  const uint16_t arcColor = 0x2F43; // green accent
+  
+  // Draw partial arc (left side, like a speedometer)
+  for (float angle = 200; angle <= 340; angle += 5) {
+    float rad = (angle - 90) * PI / 180.0f;
+    int x1 = cx + (int)(cos(rad) * r1);
+    int y1 = cy + (int)(sin(rad) * r1);
+    int x2 = cx + (int)(cos(rad) * r2);
+    int y2 = cy + (int)(sin(rad) * r2);
+    display.drawLine(x1, y1, x2, y2, arcColor);
+  }
+  
+  // Draw needle indicator pointing to ~45 degrees (mid-range)
+  // Only the last ~15 pixels visible, with 2-pixel gap from arc
+  float needleAngle = 250;  // pointing position on the arc
+  float rad = (needleAngle - 90) * PI / 180.0f;
+  
+  const float gapFromArc = 2.0f;         // gap between needle tip and arc inner edge
+  const float visibleLength = 15.0f;    // visible portion of needle
+  
+  float needleTip = r1 - gapFromArc;         // just before arc inner edge
+  float needleStart = needleTip - visibleLength;  // 15 pixels back toward center
+  
+  int nx1 = cx + (int)(cos(rad) * needleStart);
+  int ny1 = cy + (int)(sin(rad) * needleStart);
+  int nx2 = cx + (int)(cos(rad) * needleTip);
+  int ny2 = cy + (int)(sin(rad) * needleTip);
+  
+  // Draw red needle (visible portion only)
+  display.drawLine(nx1, ny1, nx2, ny2, TFT_RED);
+  display.drawLine(nx1-1, ny1, nx2-1, ny2, TFT_RED);  // thicker
+  display.drawLine(nx1+1, ny1, nx2+1, ny2, TFT_RED);
+  
+  // Center hub
+  display.fillCircle(cx, cy, 6, TFT_WHITE);
+  
+  // App title
+  display.setTextDatum(MC_DATUM);
+  display.setFont(&fonts::FreeSansBold12pt7b);
+  display.setTextColor(TFT_WHITE, TFT_BLACK);
+  display.drawString("SPEEDOMETER", cx, cy + 50);
+  display.setFont(nullptr);
+  
+  // Subtext
+  display.setTextSize(1);
+  display.setTextColor(0x8410, TFT_BLACK); // gray
+  display.drawString("Initializing...", cx, cy + 75);
+  
+  // Version/credit (optional)
+  display.setTextColor(0x4208, TFT_BLACK); // darker gray
+  display.drawString("v1.0", cx, H - 20);
 }
 
 // ---------- Setup & Loop ----------
@@ -546,12 +772,28 @@ void setup() {
   #if defined(ARDUINO_USB_CDC_ON_BOOT) && (ARDUINO_USB_CDC_ON_BOOT==1)
     Serial0.begin(115200);
   #endif
+  
+  // Brief startup delay
   delay(100);
 
   display.init();
   display.setRotation(0);
   display.setBrightness(255);
   display.invertDisplay(true);
+  
+  // Show splash screen while initializing
+  renderSplash();
+  
+  // Initialize battery management
+  battery.begin();
+  
+  // Give battery time to update and settle (update() runs once per second)
+  delay(1500);
+  battery.update();  // Force an update to get initial percentage
+  ui.battery_pc = battery.getPercentage();
+  
+  // Hold splash screen a bit longer for visual effect
+  delay(500);
 
   Serial.printf("Display %dx%d ready. Controls: 'a' left, 'd' right, 'm' toggle mode.\n", display.width(), display.height());
   #if defined(TOUCH_I2C_SCANNER)
@@ -575,6 +817,30 @@ static void renderActive() {
 void loop() {
   static uint32_t lastUpdate = 0;
   static uint32_t lastDemo   = 0;
+  static uint32_t lastLowBatFlash = 0;
+  
+  // Update battery reading
+  battery.update();
+  ui.battery_pc = battery.getPercentage();
+
+  // Update LOW BAT flash state (toggle every second, independent of redraws)
+  uint32_t now = millis();
+  if (now - lastLowBatFlash > 1000) {
+    ui.lowBatFlashState = !ui.lowBatFlashState;
+    lastLowBatFlash = now;
+    // Trigger redraw on main screen if low battery warning is active
+    if (battery.isLowBattery() && !battery.isUSBPowered() && currentScreen == Screen::MAIN) {
+      renderMain();
+    }
+  }
+
+  // Check if battery state changed (USB plugged/unplugged, charging status)
+  BatteryState currentBatteryState = battery.getState();
+  if (currentBatteryState != ui.prev_battery_state) {
+    ui.prev_battery_state = currentBatteryState;
+    // Redraw current screen to reflect new state
+    renderActive();
+  }
 
   // Touch input (swipe left/right to change screens, tap center to toggle mode)
   {
@@ -642,21 +908,17 @@ void loop() {
     }
   }
 
-  // Periodic demo updates for MAIN screen (animate values)
-  uint32_t now = millis();
+  // Periodic demo updates for MAIN screen (animate values) - disabled unless DEMO_MODE is defined
+  #ifdef DEMO_MODE
   if (now - lastDemo > 120) {
     lastDemo = now;
-    // simple oscillation of speed 0..max
+    // simple oscillation of speed and satellites (battery uses real values)
     static float t = 0.0f; t += 0.04f; if (t > TWO_PI) t -= TWO_PI;
-    ui.speed_kmh = (sinf(t) * 0.5f + 0.5f) * ui.max_kmh;
-    ui.battery_pc = 20 + (int)((sinf(t*0.4f)*0.5f + 0.5f) * 80);
+    // Demo target peak at 230 km/h; dial max remains 220, so needle/arc will peg at max
+    const float demoTopKmh = 230.0f;
+    ui.speed_kmh = (sinf(t) * 0.5f + 0.5f) * demoTopKmh;
     ui.satellites = 5 + (int)((sinf(t*0.7f)*0.5f + 0.5f) * 15);
     if (currentScreen == Screen::MAIN) renderMain();
   }
-
-  // Initial draw and slow refresh for other screens
-  if (now - lastUpdate > 2000) {
-    lastUpdate = now;
-    if (currentScreen != Screen::MAIN) renderActive();
-  }
+  #endif
 }

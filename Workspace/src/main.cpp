@@ -921,4 +921,12 @@ void loop() {
     if (currentScreen == Screen::MAIN) renderMain();
   }
   #endif
+  
+  // Periodic screen updates (every 1 second for Metrics and Settings to show live data)
+  if (now - lastUpdate > 1000) {
+    lastUpdate = now;
+    if (currentScreen == Screen::METRICS || currentScreen == Screen::SETTINGS) {
+      renderActive();
+    }
+  }
 }

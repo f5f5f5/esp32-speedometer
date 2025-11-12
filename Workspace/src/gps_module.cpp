@@ -105,7 +105,19 @@ void gps_poll(void) {
       linePos = 0; // overflow reset
     }
   }
+  
+  // Convert knots to km/h
   g_data.speedKmh = g_data.speedKnots * 1.852f;
+  
+  // Apply deadband filter to suppress GPS drift when stationary
+  // GPS modules typically have ~0.1-0.5 knots of noise when stationary
+  // This translates to ~0.2-0.9 km/h, but can reach 1.5 km/h in some conditions
+  // Set threshold at 1.8 km/h (just under walking pace ~2-3 km/h)
+  const float SPEED_DEADBAND_KMH = 1.8f;
+  if (g_data.speedKmh < SPEED_DEADBAND_KMH) {
+    g_data.speedKmh = 0.0f;
+    g_data.speedKnots = 0.0f;
+  }
 }
 
 void gps_get_data(GPSData* out) {

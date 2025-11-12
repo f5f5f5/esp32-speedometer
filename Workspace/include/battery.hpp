@@ -20,7 +20,7 @@
 #define VBAT_NOMINAL 3.70f       // Nominal voltage
 #define VBAT_LOW 3.40f           // Low battery warning
 #define VBAT_CRITICAL 3.20f      // Critical - shutdown soon
-#define VBAT_EMPTY 3.00f         // Empty
+#define VBAT_EMPTY 3.15f         // Empty (calibrated from actual discharge test)
 
 // ADC configuration
 #define ADC_VREF 3.3f            // ESP32-S3 ADC reference voltage
@@ -38,7 +38,7 @@
 
 // Low-battery threshold by percentage
 #ifndef LOW_BAT_PERCENT
-#define LOW_BAT_PERCENT 10
+#define LOW_BAT_PERCENT 5
 #endif
 
 // Fallback USB detection voltage threshold (when no USB/CHG pins are defined)
@@ -143,8 +143,9 @@ private:
   int voltageToPercentage(float v) {
     // Piecewise OCV curve for typical LiPo at rest (approximate)
     // Voltage values in volts; percentages in %
+    // 0% calibrated from actual discharge test (3.15V actual = device shutdown point)
     static const float ocvV[] = {
-      3.00f, 3.50f, 3.61f, 3.69f, 3.71f, 3.73f, 3.75f, 3.77f, 3.79f, 3.80f,
+      3.15f, 3.50f, 3.61f, 3.69f, 3.71f, 3.73f, 3.75f, 3.77f, 3.79f, 3.80f,
       3.82f, 3.84f, 3.85f, 3.87f, 3.91f, 3.95f, 3.98f, 4.02f, 4.08f,
       4.11f, 4.15f, 4.20f
     };
@@ -239,7 +240,8 @@ public:
     #endif
     
     // Legacy low-voltage absence heuristic (keep for fallback)
-    if (voltageFiltered < 3.20f && mvLastSample > 0 && mvLastSample < 1200) {
+    // Adjusted threshold to 3.10V (below new VBAT_EMPTY of 3.15V)
+    if (voltageFiltered < 3.10f && mvLastSample > 0 && mvLastSample < 1200) {
       absentScore = min(absentScore + 1, 5);
     } else {
       absentScore = max(absentScore - 1, -5);

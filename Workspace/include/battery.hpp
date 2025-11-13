@@ -81,6 +81,7 @@ private:
   // Moving average for stable readings
   float voltageBuffer[BATTERY_SAMPLES];
   int bufferIndex;
+  float bufferSum;
   
   float readBatteryVoltage() {
     // Prefer calibrated millivolt read when available (Arduino ESP32 core)
@@ -130,14 +131,11 @@ private:
     }
     float sample = acc / oversample;
 
+    float old = voltageBuffer[bufferIndex];
     voltageBuffer[bufferIndex] = sample;
+    bufferSum += (sample - old);
     bufferIndex = (bufferIndex + 1) % BATTERY_SAMPLES;
-    
-    float sum = 0;
-    for (int i = 0; i < BATTERY_SAMPLES; i++) {
-      sum += voltageBuffer[i];
-    }
-    return sum / BATTERY_SAMPLES;
+    return bufferSum / BATTERY_SAMPLES;
   }
   
   int voltageToPercentage(float v) {
@@ -175,7 +173,7 @@ private:
 public:
   Battery() : voltage(0), voltageFiltered(0), percentage(0), state(BatteryState::UNKNOWN), 
               lastUpdate(0), lowBatteryWarning(false), warningFlashTime(0), lowWarnLatched(false),
-              usbTrendScore(0), lastVoltageFiltered(0), mvLastSample(0), lastRawADC(0), absentScore(0), batteryAbsent(false), bufferIndex(0) {
+              usbTrendScore(0), lastVoltageFiltered(0), mvLastSample(0), lastRawADC(0), absentScore(0), batteryAbsent(false), bufferIndex(0), bufferSum(0) {
     for (int i = 0; i < BATTERY_SAMPLES; i++) {
       voltageBuffer[i] = 0;
     }
@@ -197,12 +195,15 @@ public:
       analogSetPinAttenuation(BATTERY_ADC_PIN, ADC_11db);
     #endif
     
-    // Initialize buffer and filter with current readings
+  // Initialise buffer and filter with current readings
+    bufferSum = 0.0f;
     for (int i = 0; i < BATTERY_SAMPLES; i++) {
-      voltageBuffer[i] = readBatteryVoltage();
+      float v = readBatteryVoltage();
+      voltageBuffer[i] = v;
+      bufferSum += v;
       delay(10);
     }
-    voltage = getAverageVoltage();
+    voltage = bufferSum / BATTERY_SAMPLES;
     voltageFiltered = voltage;
     lastVoltageFiltered = voltageFiltered;
     mvLastSample = 0;
@@ -223,7 +224,7 @@ public:
     lastUpdate = now;
     float oldVoltage = voltageFiltered;
     float vAvg = getAverageVoltage();
-    // Exponential moving average to stabilize
+  // Exponential moving average to stabilise
     const float alpha = 0.2f; // higher = more responsive
     voltageFiltered = (alpha * vAvg) + ((1.0f - alpha) * voltageFiltered);
     if ((vAvg - voltageFiltered) > 1.0f) { // fast catch-up if way off
@@ -239,14 +240,14 @@ public:
     Serial.printf("[BAT] Raw avg: %.3fV, Filtered: %.3fV, Percent: %d%%\n", vAvg, voltageFiltered, percentage);
     #endif
     
-    // Legacy low-voltage absence heuristic (keep for fallback)
-    // Adjusted threshold to 3.10V (below new VBAT_EMPTY of 3.15V)
+      // Low-voltage absence heuristic (fallback)
+      // Threshold set to 3.10f
     if (voltageFiltered < 3.10f && mvLastSample > 0 && mvLastSample < 1200) {
       absentScore = min(absentScore + 1, 5);
     } else {
       absentScore = max(absentScore - 1, -5);
     }
-    bool legacyAbsent = (absentScore >= 3);
+  bool lowVoltageAbsent = (absentScore >= 3);
 
     // High-voltage stability absence heuristic for this board:
     // When running ONLY from USB with battery physically removed, the divider pin is held at a
@@ -273,11 +274,11 @@ public:
   bool stabilityReady = (recentCount >= STABILITY_MIN_SAMPLES);
   bool highVoltageStable = (voltageFiltered >= USB_VOLT_THRESHOLD && percentage >= USB_DETECT_MIN_PERCENT && spread < USB_STABILITY_SPREAD_V && stabilityReady);
 
-    // Decide batteryAbsent: prefer stability heuristic when it triggers, else legacy low-voltage heuristic
+  // Decide batteryAbsent: prefer stability heuristic when it triggers, else low-voltage heuristic
     if (highVoltageStable) {
       batteryAbsent = true;
     } else {
-      batteryAbsent = legacyAbsent;
+  batteryAbsent = lowVoltageAbsent;
     }
 
     // Detect charging state
@@ -296,8 +297,8 @@ public:
       bool usbPowered = (voltageFiltered >= USB_VOLT_THRESHOLD) && 
                         (usbTrendScore >= 0 || voltageFiltered >= 4.15f || batteryAbsent);
       #ifdef DEBUG_BATTERY
-      Serial.printf("[BAT-USB] V=%.3f dV=%.3f thr=%.3f trend=%d mv=%umV absent=%d(legacy=%d spread=%.4f cnt=%d) -> usb=%d\n",
-                    voltageFiltered, dv, USB_VOLT_THRESHOLD, usbTrendScore, mvLastSample, (int)batteryAbsent, legacyAbsent, spread, recentCount, usbPowered);
+  Serial.printf("[BAT-USB] V=%.3f dV=%.3f thr=%.3f trend=%d mv=%umV absent=%d(lowV=%d spread=%.4f cnt=%d) -> usb=%d\n",
+        voltageFiltered, dv, USB_VOLT_THRESHOLD, usbTrendScore, mvLastSample, (int)batteryAbsent, lowVoltageAbsent, spread, recentCount, usbPowered);
       #endif
     #endif
 

@@ -49,7 +49,7 @@ public:
                         #else
                             cfg.spi_host = SPI2_HOST;
                         #endif
-                        // Try SPI mode; wrong mode can bit-shift color fields. Default 0; try 3 if colors look mixed.
+                        // Try SPI mode; wrong mode can bit-shift colour fields. Default 0; try 3 if colours look mixed.
                         #if defined(LCD_SPI_MODE_3)
                             cfg.spi_mode = 3;
                         #else
@@ -82,7 +82,7 @@ public:
                         cfg.dummy_read_pixel = 8;    // Common GC9A01 default
                         cfg.dummy_read_bits  = 0;
 
-                        // Color profile selector: choose invert/rgb order via build flags
+                        // Colour profile selector: choose invert/RGB order via build flags
                         // - LCD_COLOR_PROFILE_0: invert=true,  rgb_order=true
                         // - LCD_COLOR_PROFILE_1: invert=false, rgb_order=false (swapped R/B)
                         // - LCD_COLOR_PROFILE_2: invert=true,  rgb_order=false
@@ -97,7 +97,7 @@ public:
                             cfg.invert = false; cfg.rgb_order = false;
                         #endif
 
-                        cfg.dlen_16bit = false; // Use 8-bit transfers (panel handles 16-bit color)
+                        cfg.dlen_16bit = false; // Use 8-bit transfers (panel handles 16-bit colour)
             cfg.bus_shared = true;
 
             _panel_instance.config(cfg);

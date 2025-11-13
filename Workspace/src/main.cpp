@@ -4,6 +4,8 @@
 #include "display_config.hpp"
 #include "battery.hpp"
 #include "gps_module.h"
+#include "arc_utils.hpp"
+#include "icon_utils.hpp"
 
 // Create display and battery instances
 LGFX display;
@@ -105,27 +107,18 @@ static ColorScheme darkMode = {
 
 static ColorScheme& getColors() { return ui.isDarkMode ? darkMode : lightMode; }
 
-// ---------- Geometry Helpers ----------
-static inline float deg2rad(float deg) { return (deg - 90.0f) * (PI / 180.0f); }
-static inline void polarPoint(int cx, int cy, float r, float deg, int &x, int &y) {
-  float th = deg2rad(deg);
-  x = cx + (int)roundf(cosf(th) * r);
-  y = cy + (int)roundf(sinf(th) * r);
-}
+// ========================================
+// GEOMETRY & MATH HELPERS
+// ========================================
 
-static constexpr float ARC_STEP_DEGREES = 3.0f;
-static void fillArcToSprite(LGFX_Sprite* spr, int cx, int cy, float rInner, float rOuter, float startDeg, float endDeg, uint16_t color) {
-  if (startDeg > endDeg) return;
-  int px_i, py_i, px_o, py_o, qx_i, qy_i, qx_o, qy_o; float prev = startDeg;
-  polarPoint(cx, cy, rInner, prev, px_i, py_i); polarPoint(cx, cy, rOuter, prev, px_o, py_o);
-  for (float a = startDeg + ARC_STEP_DEGREES; a <= endDeg + 0.001f; a += ARC_STEP_DEGREES) {
-    float cur = a > endDeg ? endDeg : a;
-    polarPoint(cx, cy, rInner, cur, qx_i, qy_i); polarPoint(cx, cy, rOuter, cur, qx_o, qy_o);
-    spr->fillTriangle(px_i, py_i, px_o, py_o, qx_o, qy_o, color);
-    spr->fillTriangle(px_i, py_i, qx_i, qy_i, qx_o, qy_o, color);
-    px_i = qx_i; py_i = qy_i; px_o = qx_o; py_o = qy_o; prev = cur;
-  }
-}
+// Arc rendering resolution: smaller values = smoother arcs, larger = faster rendering
+// Geometry helpers now provided by arc_utils.hpp (ui_arc namespace)
+using ui_arc::deg2rad;      // re-export for existing code
+using ui_arc::polarPoint;   // re-export for existing code
+
+// ========================================
+// SCREEN RENDERING
+// ========================================
 
 // ---------- Rendering: Main Gauge ----------
 static void renderMain() {
@@ -144,148 +137,50 @@ static void renderMain() {
   const float batGap = 5.0f; const float batStart = 180.0f + batGap; const float batEnd = 240.0f; const float batSpan = batEnd - batStart;
   const float satGap = 5.0f; const float satStart = 180.0f - satGap; const float satEnd = 120.0f; const float satSpan = satStart - satEnd;
 
-  // Background for speed arc (split wrap)
-  fillArcToSprite(&sprite, cx, cy, rInner, rOuter, speedStart, 360, cs.arcBackground);
-  fillArcToSprite(&sprite, cx, cy, rInner, rOuter, 0, speedEnd, cs.arcBackground);
+  // Speed gauge (background + segmented fill) via utility
+  float needleAngle = ui_arc::drawSpeedGauge(sprite, cx, cy,
+                                             rInner, rOuter,
+                                             speedStart, speedSpan,
+                                             ui.speed_kmh, ui.max_kmh,
+                                             cs.arcBackground, cs.arcLow, cs.arcMid, cs.arcHigh);
 
-  float fillFraction = constrain(ui.speed_kmh / ui.max_kmh, 0.0f, 1.0f);
-  float fillDeg = fillFraction * speedSpan; // degrees of fill
-  if (fillDeg > 0.0f) {
-    float greenEnd = min(fillDeg, speedSpan * 0.6f);
-    float yellowEnd = min(fillDeg, speedSpan * 0.85f);
-    // Green
-    if (greenEnd > 0.0f) {
-      float ge = speedStart + greenEnd; if (ge > 360) { fillArcToSprite(&sprite, cx, cy, rInner, rOuter, speedStart, 360, cs.arcLow); fillArcToSprite(&sprite, cx, cy, rInner, rOuter, 0, ge - 360, cs.arcLow); }
-      else fillArcToSprite(&sprite, cx, cy, rInner, rOuter, speedStart, ge, cs.arcLow);
-    }
-    // Yellow
-    if (fillDeg > speedSpan * 0.6f) {
-      float ys = speedStart + speedSpan * 0.6f; float ye = speedStart + yellowEnd;
-      if (ys >= 360) { ys -= 360; ye -= 360; fillArcToSprite(&sprite, cx, cy, rInner, rOuter, ys, ye, cs.arcMid); }
-      else if (ye > 360) { fillArcToSprite(&sprite, cx, cy, rInner, rOuter, ys, 360, cs.arcMid); fillArcToSprite(&sprite, cx, cy, rInner, rOuter, 0, ye - 360, cs.arcMid); }
-      else fillArcToSprite(&sprite, cx, cy, rInner, rOuter, ys, ye, cs.arcMid);
-    }
-    // Red
-    if (fillDeg > speedSpan * 0.85f) {
-      float rs = speedStart + speedSpan * 0.85f; float re = speedStart + fillDeg;
-      if (rs >= 360) { rs -= 360; re -= 360; fillArcToSprite(&sprite, cx, cy, rInner, rOuter, rs, re, cs.arcHigh); }
-      else if (re > 360) { fillArcToSprite(&sprite, cx, cy, rInner, rOuter, rs, 360, cs.arcHigh); fillArcToSprite(&sprite, cx, cy, rInner, rOuter, 0, re - 360, cs.arcHigh); }
-      else fillArcToSprite(&sprite, cx, cy, rInner, rOuter, rs, re, cs.arcHigh);
-    }
-  }
-
-  // Battery arc background + fill
-  fillArcToSprite(&sprite, cx, cy, rBatInner, rBatOuter, batStart, batEnd, cs.arcBackground);
-  float batFillDeg = (ui.battery_pc / 100.0f) * batSpan;
+  // Battery arc
   uint16_t batColor = battery.isUSBPowered() ? 0x0318 : (ui.battery_pc < 20 ? cs.arcHigh : cs.arcLow);  // Darker blue for USB
-  if (batFillDeg > 0) fillArcToSprite(&sprite, cx, cy, rBatInner, rBatOuter, batStart, batStart + batFillDeg, batColor);
+  ui_arc::drawBatteryArc(sprite, cx, cy, rBatInner, rBatOuter, batStart, batSpan, ui.battery_pc, cs.arcBackground, batColor);
 
-  // Satellite arc (using satellites used, fallback to in-view count if zero)
-  fillArcToSprite(&sprite, cx, cy, rSatInner, rSatOuter, satEnd, satStart, cs.arcBackground);
-  // Satellite arc: max at 6 sats, red <=2, amber =3, green >3
-  const int maxSatsForArc = 6;
-  float satCountNorm = (min(ui.satellites, maxSatsForArc) / (float)maxSatsForArc) * satSpan;
-  if (satCountNorm > 0) {
-    // Determine color: red if <=2, amber if 3, green if >3
-    uint16_t satColor;
-    if (ui.satellites <= 2) {
-      satColor = cs.arcHigh;  // red
-    } else if (ui.satellites == 3) {
-      satColor = cs.arcMid;   // amber
-    } else {
-      satColor = cs.arcLow;   // green
-    }
-    fillArcToSprite(&sprite, cx, cy, rSatInner, rSatOuter, satStart - satCountNorm, satStart, satColor);
-  }
+  // Satellite arc (used satellites scaled to max)
+  ui_arc::drawSatelliteArc(sprite, cx, cy, rSatInner, rSatOuter, satStart, satSpan, ui.satellites, 6, cs.arcBackground, cs.arcLow, cs.arcMid, cs.arcHigh);
 
   // Draw anti-aliased borders around all arc bars (legacy approach)
   // Use opposite mode's background color for borders (light mode uses dark bg, dark mode uses light bg)
   uint16_t borderColor = ui.isDarkMode ? 0xADB5 : 0x1082;
 
-  // Speed arc outer and inner borders (240° to 360°, then 0° to 120°)
-  // UI angles: 240° to 360° = drawArc 150° to 270°
-  sprite.drawArc(cx, cy, rOuter, rOuter, 150, 270, borderColor);
-  // UI angles: 0° to 120° = drawArc 270° to 30° (wraps, so draw as -90° to 30°)
-  sprite.drawArc(cx, cy, rOuter, rOuter, -90, 30, borderColor);
-  sprite.drawArc(cx, cy, rInner, rInner, 150, 270, borderColor);
-  sprite.drawArc(cx, cy, rInner, rInner, -90, 30, borderColor);
-
-  // Speed arc end caps (radial lines at 240° and 120°)
-  int x1, y1, x2, y2;
-  // Start cap at 240° (8 o'clock)
-  polarPoint(cx, cy, rInner, 240, x1, y1);
-  polarPoint(cx, cy, rOuter, 240, x2, y2);
-  sprite.drawLine(x1, y1, x2, y2, borderColor);
-  // End cap at 120° (4 o'clock)
-  polarPoint(cx, cy, rInner, 120, x1, y1);
-  polarPoint(cx, cy, rOuter, 120, x2, y2);
-  sprite.drawLine(x1, y1, x2, y2, borderColor);
-
-  // Battery arc outer and inner borders
-  // UI angles: 185° to 240° = drawArc 95° to 150°
-  sprite.drawArc(cx, cy, rBatOuter, rBatOuter, 95, 150, borderColor);
-  sprite.drawArc(cx, cy, rBatInner, rBatInner, 95, 150, borderColor);
-
-  // Battery arc end caps
-  polarPoint(cx, cy, rBatInner, batStart, x1, y1);
-  polarPoint(cx, cy, rBatOuter, batStart, x2, y2);
-  sprite.drawLine(x1, y1, x2, y2, borderColor);
-  polarPoint(cx, cy, rBatInner, batEnd, x1, y1);
-  polarPoint(cx, cy, rBatOuter, batEnd, x2, y2);
-  sprite.drawLine(x1, y1, x2, y2, borderColor);
-
-  // Satellite arc outer and inner borders
-  // UI angles: 120° to 175° = drawArc 30° to 85°
-  sprite.drawArc(cx, cy, rSatOuter, rSatOuter, 30, 85, borderColor);
-  sprite.drawArc(cx, cy, rSatInner, rSatInner, 30, 85, borderColor);
-
-  // Satellite arc end caps
-  polarPoint(cx, cy, rSatInner, satEnd, x1, y1);
-  polarPoint(cx, cy, rSatOuter, satEnd, x2, y2);
-  sprite.drawLine(x1, y1, x2, y2, borderColor);
-  polarPoint(cx, cy, rSatInner, satStart, x1, y1);
-  polarPoint(cx, cy, rSatOuter, satStart, x2, y2);
-  sprite.drawLine(x1, y1, x2, y2, borderColor);
+  // Borders + end caps using helper
+  ui_arc::drawArcBordersWithCaps(sprite, cx, cy, rInner, rOuter, 240, 120, borderColor);
+  ui_arc::drawArcBordersWithCaps(sprite, cx, cy, rBatInner, rBatOuter, batStart, batEnd, borderColor);
+  ui_arc::drawArcBordersWithCaps(sprite, cx, cy, rSatInner, rSatOuter, satEnd, satStart, borderColor);
 
   // Speed needle
-  float currentSpeedAngle = speedStart + fillDeg; if (currentSpeedAngle >= 360) currentSpeedAngle -= 360;
-  float needleRad = deg2rad(currentSpeedAngle); const float gapFromArc = 2.0f; const float visibleLength = 30.0f; float needleTip = rInner - gapFromArc; float needleStart = needleTip - visibleLength; float perpRad = needleRad + PI/2.0f; float baseWidth=3.0f; int bx1 = cx + (int)(cosf(needleRad)*needleStart + cosf(perpRad)*baseWidth); int by1 = cy + (int)(sinf(needleRad)*needleStart + sinf(perpRad)*baseWidth); int bx2 = cx + (int)(cosf(needleRad)*needleStart - cosf(perpRad)*baseWidth); int by2 = cy + (int)(sinf(needleRad)*needleStart - sinf(perpRad)*baseWidth); float tipWidth=1.5f; int tx1 = cx + (int)(cosf(needleRad)*needleTip + cosf(perpRad)*tipWidth); int ty1 = cy + (int)(sinf(needleRad)*needleTip + sinf(perpRad)*tipWidth); int tx2 = cx + (int)(cosf(needleRad)*needleTip - cosf(perpRad)*tipWidth); int ty2 = cy + (int)(sinf(needleRad)*needleTip - sinf(perpRad)*tipWidth); uint16_t shadowColor = ui.isDarkMode ? 0x0841 : 0x8C92; sprite.fillTriangle(bx1+2,by1+2,bx2+2,by2+2,tx1+2,ty1+2,shadowColor); sprite.fillTriangle(bx2+2,by2+2,tx1+2,ty1+2,tx2+2,ty2+2,shadowColor); sprite.fillTriangle(bx1,by1,bx2,by2,tx1,ty1,TFT_RED); sprite.fillTriangle(bx2,by2,tx1,ty1,tx2,ty2,TFT_RED);
+  ui_icon::drawSpeedNeedle(sprite, cx, cy, rInner, needleAngle, ui.isDarkMode);
 
   // Battery icon / USB indicator
   int batIconX = cx - 40; int batIconY = cy + 55; bool isUSB = battery.isUSBPowered(); bool isLow = battery.isLowBattery();
-  if (isUSB) {
-    uint16_t c = getColors().iconNormal; int o = -9; sprite.fillRect(batIconX + o - 8, batIconY - 1, 8, 2, c); sprite.fillRoundRect(batIconX + o, batIconY - 5, 12, 10, 2, c); sprite.fillRoundRect(batIconX + o + 12, batIconY - 3, 6, 6, 1, c); sprite.drawLine(batIconX + o + 14, batIconY - 1, batIconX + o + 14, batIconY + 1, getColors().background); sprite.drawLine(batIconX + o + 16, batIconY - 1, batIconX + o + 16, batIconY + 1, getColors().background);
-  } else {
-    uint16_t c = isLow ? cs.arcHigh : cs.iconNormal; sprite.drawRect(batIconX - 12, batIconY - 8, 24, 14, c); sprite.fillRect(batIconX + 12, batIconY - 4, 2, 6, c); int fillPix = (ui.battery_pc * 20) / 100; if (fillPix > 0) sprite.fillRect(batIconX -10, batIconY -6, fillPix, 10, c);
-  }
+  if (isUSB) { ui_icon::drawUSBPlugIcon(sprite, batIconX, batIconY, cs.iconNormal, cs.background); }
+  else { ui_icon::drawBatteryIcon(sprite, batIconX, batIconY, ui.battery_pc, isLow, isLow ? cs.arcHigh : cs.iconNormal); }
   sprite.setTextDatum(TC_DATUM); sprite.setTextSize(1); sprite.setTextColor(cs.text, cs.background); char batTxt[8]; snprintf(batTxt, sizeof(batTxt), isUSB ? "USB" : "%d%%", ui.battery_pc); sprite.drawString(batTxt, batIconX, batIconY + 10);
 
   // Low battery flashing label
-  if (isLow && !isUSB && ui.lowBatFlashState) {
-    sprite.setTextDatum(TL_DATUM); sprite.setFont(&fonts::FreeSansBold12pt7b); sprite.setTextColor(cs.arcHigh, cs.background); sprite.drawString("LOW", batIconX + 18 - 74 + 17, batIconY - 16 - 66 + 37 - 5); sprite.drawString("BAT", batIconX + 18 - 52, batIconY - 16 - 66 + 37 - 5 + 19); sprite.setFont(nullptr);
-  }
+  if (isLow && !isUSB && ui.lowBatFlashState) { ui_icon::drawLowBatteryLabel(sprite, batIconX, batIconY, cs.arcHigh, cs.background); }
 
   // Satellite icon & count
-  int satIconX = cx + 40; int satIconY = cy + 55; sprite.fillRect(satIconX - 2, satIconY - 5, 8, 10, cs.iconNormal); sprite.drawRect(satIconX -2, satIconY -5, 8, 10, cs.iconNormal); sprite.fillRect(satIconX -10, satIconY -3, 7, 6, cs.iconNormal); sprite.drawLine(satIconX -10, satIconY -1, satIconX -3, satIconY -1, cs.background); sprite.drawLine(satIconX -10, satIconY +1, satIconX -3, satIconY +1, cs.background); sprite.drawLine(satIconX +2, satIconY -5, satIconX +2, satIconY -9, cs.iconNormal); sprite.fillCircle(satIconX +2, satIconY -10, 2, cs.iconNormal); for (int i=1;i<=3;i++) sprite.drawArc(satIconX +6, satIconY, 4 + i*3, 4 + i*3, 315, 45, cs.iconNormal); sprite.setTextDatum(TC_DATUM); sprite.setTextSize(1); sprite.setTextColor(cs.text, cs.background); char satTxt[6]; snprintf(satTxt, sizeof(satTxt), "%d", ui.satellites); sprite.drawString(satTxt, satIconX, satIconY + 10);
+  int satIconX = cx + 40; int satIconY = cy + 55; ui_icon::drawSatelliteIcon(sprite, satIconX, satIconY, cs.iconNormal, cs.background); sprite.setTextDatum(TC_DATUM); sprite.setTextSize(1); sprite.setTextColor(cs.text, cs.background); char satTxt[6]; snprintf(satTxt, sizeof(satTxt), "%d", ui.satellites); sprite.drawString(satTxt, satIconX, satIconY + 10);
 
   // No fix warning label (symmetrical to LOW BAT, above satellite icon)
   bool showNoFixWarning = !ui.fixValid;
-  if (showNoFixWarning && ui.lowBatFlashState) {  // Use same flash state for consistency
-    sprite.setTextDatum(TL_DATUM); sprite.setFont(&fonts::FreeSansBold12pt7b); sprite.setTextColor(cs.arcHigh, cs.background);
-    // Mirror the LOW BAT positioning: satIconX is +40 from center, batIconX is -40
-    // LOW BAT offsets: batIconX + 18 - 74 + 17, batIconY - 16 - 66 + 37 - 5
-    // For symmetry, flip horizontal offset around satIconX
-    int noX = satIconX - 18 + 74 - 17 - 15 - 5;  // Adjusted for "NO" width, moved left 5px
-    int noY = satIconY - 16 - 66 + 37 - 5 - 2;   // Moved up 2px
-    int fixX = satIconX - 18 + 74 - 17 - 22; // Adjusted for "FIX" width
-    int fixY = noY + 19;  // Same vertical spacing as LOW/BAT
-    sprite.drawString("NO", noX, noY);
-    sprite.drawString("FIX", fixX, fixY);
-    sprite.setFont(nullptr);
-  }
+  if (showNoFixWarning && ui.lowBatFlashState) { ui_icon::drawNoFixLabel(sprite, satIconX, satIconY, cs.arcHigh, cs.background); }
 
   // Sun/Moon
-  int sunX = cx; int iconY = cy + 24; if (ui.isDarkMode) { sprite.fillCircle(sunX, iconY, 11, cs.iconNormal); sprite.fillCircle(sunX + 6, iconY - 3, 10, cs.background); } else { sprite.fillCircle(sunX, iconY, 10, cs.iconNormal); for (int i=0;i<8;i++){ float ang = i*45.0f; int rx1,ry1,rx2,ry2; polarPoint(sunX, iconY, 12, ang, rx1, ry1); polarPoint(sunX, iconY, 18, ang, rx2, ry2); sprite.drawLine(rx1, ry1, rx2, ry2, cs.iconNormal);} }
+  int sunX = cx; int iconY = cy + 24; ui_icon::drawSunMoonIcon(sprite, sunX, iconY, ui.isDarkMode, cs.iconNormal, cs.background);
 
   // Speed value
   sprite.setTextDatum(MC_DATUM); sprite.setFont(&fonts::FreeSansBold24pt7b); sprite.setTextColor(cs.speedText, cs.background); char spBuf[12]; if (ui.speed_kmh < 10.0f) snprintf(spBuf, sizeof(spBuf), "%.1f", ui.speed_kmh); else snprintf(spBuf, sizeof(spBuf), "%d", (int)roundf(ui.speed_kmh)); sprite.drawString(spBuf, cx, cy - 18); sprite.setFont(nullptr); sprite.setTextSize(2); sprite.setTextColor(cs.unitsText, cs.background); sprite.drawString(ui.units, cx, cy - 52); sprite.setTextSize(1);

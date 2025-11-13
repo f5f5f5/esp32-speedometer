@@ -81,6 +81,7 @@ private:
   // Moving average for stable readings
   float voltageBuffer[BATTERY_SAMPLES];
   int bufferIndex;
+  float bufferSum;
   
   float readBatteryVoltage() {
     // Prefer calibrated millivolt read when available (Arduino ESP32 core)
@@ -130,14 +131,11 @@ private:
     }
     float sample = acc / oversample;
 
+    float old = voltageBuffer[bufferIndex];
     voltageBuffer[bufferIndex] = sample;
+    bufferSum += (sample - old);
     bufferIndex = (bufferIndex + 1) % BATTERY_SAMPLES;
-    
-    float sum = 0;
-    for (int i = 0; i < BATTERY_SAMPLES; i++) {
-      sum += voltageBuffer[i];
-    }
-    return sum / BATTERY_SAMPLES;
+    return bufferSum / BATTERY_SAMPLES;
   }
   
   int voltageToPercentage(float v) {
@@ -175,7 +173,7 @@ private:
 public:
   Battery() : voltage(0), voltageFiltered(0), percentage(0), state(BatteryState::UNKNOWN), 
               lastUpdate(0), lowBatteryWarning(false), warningFlashTime(0), lowWarnLatched(false),
-              usbTrendScore(0), lastVoltageFiltered(0), mvLastSample(0), lastRawADC(0), absentScore(0), batteryAbsent(false), bufferIndex(0) {
+              usbTrendScore(0), lastVoltageFiltered(0), mvLastSample(0), lastRawADC(0), absentScore(0), batteryAbsent(false), bufferIndex(0), bufferSum(0) {
     for (int i = 0; i < BATTERY_SAMPLES; i++) {
       voltageBuffer[i] = 0;
     }
@@ -198,11 +196,14 @@ public:
     #endif
     
     // Initialize buffer and filter with current readings
+    bufferSum = 0.0f;
     for (int i = 0; i < BATTERY_SAMPLES; i++) {
-      voltageBuffer[i] = readBatteryVoltage();
+      float v = readBatteryVoltage();
+      voltageBuffer[i] = v;
+      bufferSum += v;
       delay(10);
     }
-    voltage = getAverageVoltage();
+    voltage = bufferSum / BATTERY_SAMPLES;
     voltageFiltered = voltage;
     lastVoltageFiltered = voltageFiltered;
     mvLastSample = 0;

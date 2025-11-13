@@ -9,9 +9,11 @@
 namespace ui_arc {
 
 static constexpr float ARC_STEP_DEGREES = 3.0f; // same resolution as legacy
+// Avoid conflict with Arduino's macro DEG_TO_RAD
+static constexpr float kDegToRad = PI / 180.0f;
 
 // Convert UI degrees (0° at 12 o'clock, clockwise) to radians (standard math orientation)
-static inline float deg2rad(float deg) { return (deg - 90.0f) * (PI / 180.0f); }
+static inline float deg2rad(float deg) { return (deg - 90.0f) * kDegToRad; }
 
 // Compute cartesian point from center, radius and UI degrees
 static inline void polarPoint(int cx, int cy, float r, float deg, int &x, int &y) {
@@ -63,12 +65,9 @@ static inline float drawSpeedGauge(LGFX_Sprite &spr, int cx, int cy,
                                    float startDeg, float spanDeg,
                                    float speedValue, float maxValue,
                                    uint16_t colBg, uint16_t colLow, uint16_t colMid, uint16_t colHigh) {
-    // Background arc (may wrap)
-    float endDeg = norm360(startDeg - spanDeg + 360.0f); // span drawn clockwise decreasing angle
-    // Legacy layout actually spans from 240 -> 120 (240° length) split at 360
-    // We mimic by filling in two parts if necessary
-    fillArc(spr, cx, cy, rInner, rOuter, startDeg, 360.0f, colBg);
-    fillArc(spr, cx, cy, rInner, rOuter, 0.0f, endDeg, colBg);
+    // Background arc (wrapped 240 -> 120, for example)
+    float endDeg = norm360(startDeg - spanDeg);
+    fillArc(spr, cx, cy, rInner, rOuter, startDeg, endDeg, colBg);
 
     float fillFraction = constrain(speedValue / maxValue, 0.0f, 1.0f);
     float fillDeg = fillFraction * spanDeg;

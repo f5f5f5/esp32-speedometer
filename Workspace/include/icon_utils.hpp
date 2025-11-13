@@ -72,7 +72,7 @@ inline void drawSatelliteIcon(LGFX_Sprite &spr, int x, int y, uint16_t color, ui
     }
 }
 
-// Flashing low battery label near battery icon anchor (same placement as legacy)
+// Flashing low battery label near battery icon anchor
 inline void drawLowBatteryLabel(LGFX_Sprite &spr, int batIconX, int batIconY, uint16_t textColor, uint16_t bg) {
     spr.setTextDatum(TL_DATUM);
     spr.setFont(&fonts::FreeSansBold12pt7b);

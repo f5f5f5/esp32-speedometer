@@ -1,4 +1,4 @@
-// Restored legacy multi-screen UI with arc gauge + GPS integration
+// Multi-screen UI with arc gauge + GPS integration
 #include <Arduino.h>
 #include <Wire.h>
 #include "display_config.hpp"
@@ -62,7 +62,7 @@ static SwipeState swipe;
 #define TAP_TIME_MS 300
 #endif
 
-// ---------- Color Schemes (same as legacy) ----------
+// ---------- Colour Schemes ----------
 struct ColorScheme {
   uint16_t background;
   uint16_t text;
@@ -151,8 +151,8 @@ static void renderMain() {
   // Satellite arc (used satellites scaled to max)
   ui_arc::drawSatelliteArc(sprite, cx, cy, rSatInner, rSatOuter, satStart, satSpan, ui.satellites, 6, cs.arcBackground, cs.arcLow, cs.arcMid, cs.arcHigh);
 
-  // Draw anti-aliased borders around all arc bars (legacy approach)
-  // Use opposite mode's background color for borders (light mode uses dark bg, dark mode uses light bg)
+  // Draw anti-aliased borders around all arc bars
+  // Use opposite mode's background colour for borders (light mode uses dark bg, dark mode uses light bg)
   uint16_t borderColor = ui.isDarkMode ? 0xADB5 : 0x1082;
 
   // Borders + end caps using helper

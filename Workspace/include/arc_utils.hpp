@@ -1,28 +1,28 @@
 #pragma once
-// Reusable arc rendering utilities for circular gauge UI
+// Arc rendering utilities for circular gauge UI
 // Angles use UI convention: 0° at 12 o'clock, increasing clockwise (0→90→180→270).
-// Functions here operate on an LGFX_Sprite to allow double-buffered rendering.
+// Functions operate on LGFX_Sprite for double-buffered rendering.
 
 #include <Arduino.h>
 #include "display_config.hpp"   // Provides LGFX / LGFX_Sprite types
 
 namespace ui_arc {
 
-static constexpr float ARC_STEP_DEGREES = 3.0f; // same resolution as legacy
+static constexpr float ARC_STEP_DEGREES = 3.0f;
 // Avoid conflict with Arduino's macro DEG_TO_RAD
 static constexpr float kDegToRad = PI / 180.0f;
 
 // Convert UI degrees (0° at 12 o'clock, clockwise) to radians (standard math orientation)
 static inline float deg2rad(float deg) { return (deg - 90.0f) * kDegToRad; }
 
-// Compute cartesian point from center, radius and UI degrees
+// Compute cartesian point from centre, radius and UI degrees
 static inline void polarPoint(int cx, int cy, float r, float deg, int &x, int &y) {
     float th = deg2rad(deg);
     x = cx + (int)roundf(cosf(th) * r);
     y = cy + (int)roundf(sinf(th) * r);
 }
 
-// Normalize angle into [0,360)
+// Normalise angle into [0,360)
 static inline float norm360(float a) { while (a < 0) a += 360.0f; while (a >= 360.0f) a -= 360.0f; return a; }
 
 // Low-level filled arc sector (no wrap handling). Assumes startDeg <= endDeg within same 0..360 range.
@@ -59,7 +59,7 @@ static inline void fillArc(LGFX_Sprite &spr, int cx, int cy, float rInner, float
 }
 
 // Draw speed gauge with 3 colored zones (green/yellow/red) and background.
-// Returns the final needle angle (normalized 0..360)
+// Returns the final needle angle (normalised 0..360)
 static inline float drawSpeedGauge(LGFX_Sprite &spr, int cx, int cy,
                                    float rInner, float rOuter,
                                    float startDeg, float spanDeg,
@@ -73,7 +73,7 @@ static inline float drawSpeedGauge(LGFX_Sprite &spr, int cx, int cy,
     float fillDeg = fillFraction * spanDeg;
     if (fillDeg <= 0.0f) return norm360(startDeg); // no fill -> needle at start
 
-    // Zone thresholds (same proportions as legacy)
+    // Zone thresholds
     float greenLimit = spanDeg * 0.60f;
     float yellowLimit = spanDeg * 0.85f;
 
@@ -117,7 +117,7 @@ static inline void drawSatelliteArc(LGFX_Sprite &spr, int cx, int cy,
                                     float startDeg, float spanDeg,
                                     int satsUsed, int maxSatsForArc,
                                     uint16_t colBg, uint16_t colLow, uint16_t colMid, uint16_t colHigh) {
-    float endDeg = norm360(startDeg - spanDeg + 360.0f); // direction similar to legacy (start decreasing)
+    float endDeg = norm360(startDeg - spanDeg); // draw from end decreasing by span
     // Background
     fillArc(spr, cx, cy, rInner, rOuter, endDeg, startDeg, colBg);
     if (satsUsed <= 0) return;
@@ -130,8 +130,8 @@ static inline void drawSatelliteArc(LGFX_Sprite &spr, int cx, int cy,
 }
 
 // Draw a thin border arc on a single radius using LGFX drawArc.
-// Converts UI degrees (0=12 o'clock clockwise) to LGFX drawArc angles (0=3 o'clock, increasing counter-clockwise?).
-// Mapping used in legacy code: drawArcAngle = uiAngle - 90.
+// Converts UI degrees (0=12 o'clock clockwise) to LGFX drawArc angles where 0° is at 3 o'clock:
+// drawArcAngle = uiAngle - 90.
 inline void drawArcBorder(LGFX_Sprite &spr, int cx, int cy, float radius,
                           float uiStartDeg, float uiEndDeg, uint16_t color) {
     // Convert to LGFX angle space
